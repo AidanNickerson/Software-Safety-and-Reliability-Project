@@ -5,6 +5,8 @@ VisualStudioVersion = 17.8.34511.84
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Software Safety Project", "Software Safety Project\Software Safety Project.vcxproj", "{791AD030-910D-4BD6-9DCD-AB7A35073E37}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TelemetryServer", "TelemetryServer\TelemetryServer.vcxproj", "{FC41CCBC-E624-4D4C-AB56-D9932D604527}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,14 @@ Global
 		{791AD030-910D-4BD6-9DCD-AB7A35073E37}.Release|x64.Build.0 = Release|x64
 		{791AD030-910D-4BD6-9DCD-AB7A35073E37}.Release|x86.ActiveCfg = Release|Win32
 		{791AD030-910D-4BD6-9DCD-AB7A35073E37}.Release|x86.Build.0 = Release|Win32
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Debug|x64.ActiveCfg = Debug|x64
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Debug|x64.Build.0 = Debug|x64
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Debug|x86.ActiveCfg = Debug|Win32
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Debug|x86.Build.0 = Debug|Win32
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Release|x64.ActiveCfg = Release|x64
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Release|x64.Build.0 = Release|x64
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Release|x86.ActiveCfg = Release|Win32
+		{FC41CCBC-E624-4D4C-AB56-D9932D604527}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

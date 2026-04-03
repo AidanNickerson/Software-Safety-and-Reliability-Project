@@ -1,3 +1,6 @@
+// Amro Belbeisi, Aidan Nickerson, Mayank Kumar
+// CSCN74000 - Software Safety and Reliability
+// Group 8
 #include "Packet.h"
 #include <sstream>
 #include <cstring>

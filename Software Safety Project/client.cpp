@@ -1,3 +1,6 @@
+// Amro Belbeisi, Aidan Nickerson, Mayank Kumar
+// CSCN74000 - Software Safety and Reliability
+// Group 8
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 
 #include "Client.h"
@@ -24,6 +27,9 @@ bool Client::connectToServer(const std::string& ip, int port) {
     }
 
     std::cout << "CONNECTED\n";
+
+    logger.open("client_log.txt");
+
     return true;
 }
 
@@ -47,21 +53,33 @@ std::string Client::receive() {
 
 // ---------- RUN ----------
 void Client::run() {
+    txSeq = 0;
+    rxSeq = 0;
+
     // Step 1: HELLO
-    send("HELLO");
+    {
+        std::string hello = "HELLO";
+        send(hello);
+        logger.log("TX", "HELLO", ++txSeq, hello.size());
+    }
     std::string challenge = receive();
 
     if (challenge.empty()) {
         std::cout << "No challenge received\n";
         return;
     }
+    logger.log("RX", getMsgType(challenge), ++rxSeq, challenge.size());
 
     // Step 2: RESPONSE
     std::string response = challenge + "_secret";
-    send("RESPONSE|" + response);
+    std::string responseMsg = "RESPONSE|" + response;
+    send(responseMsg);
+    logger.log("TX", "RESPONSE", ++txSeq, responseMsg.size());
 
     // Step 3: VERIFY
     std::string verify = receive();
+    logger.log("RX", getMsgType(verify), ++rxSeq, verify.size());
+
     if (verify != "VERIFY_OK") {
         std::cout << "Verification failed\n";
         return;
@@ -71,12 +89,15 @@ void Client::run() {
 
     // Step 4: CONTINUOUS SNAPSHOT REQUEST
     while (true) {
-        send("REQ_SNAPSHOT");
+        std::string req = "REQ_SNAPSHOT";
+        send(req);
+        logger.log("TX", "REQ_SNAPSHOT", ++txSeq, req.size());
 
         std::string ack = receive();
         if (ack.empty()) {
             break;
         }
+        logger.log("RX", getMsgType(ack), ++rxSeq, ack.size());
 
         if (ack.find("NACK") != std::string::npos) {
             std::cout << "Server rejected request\n";
@@ -87,6 +108,7 @@ void Client::run() {
         if (data.empty()) {
             break;
         }
+        logger.log("RX", "DATA", ++rxSeq, data.size());
 
         std::cout << "Snapshot: " << data << std::endl;
 

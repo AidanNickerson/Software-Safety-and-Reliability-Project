@@ -1,6 +1,7 @@
 // Amro Belbeisi, Aidan Nickerson, Mayank Kumar
 // CSCN74000 - Software Safety and Reliability
 // Group 8
+
 #include "Server.h"
 #include "Packet.h"
 #include <iostream>
@@ -8,6 +9,7 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
+// Initialize Winsock, create socket, bind, and start listening
 bool Server::start(int port) {
     WSADATA wsa;
 
@@ -32,11 +34,13 @@ bool Server::start(int port) {
 
     std::cout << "Server listening on port " << port << "...\n";
 
+    // Open log file
     logger.open("server_log.txt");
 
     return true;
 }
 
+// Receive message from client
 std::string Server::receive() {
     char buffer[1024] = { 0 };
     int bytes = recv(clientSocket, buffer, sizeof(buffer), 0);
@@ -48,10 +52,12 @@ std::string Server::receive() {
     return std::string(buffer, bytes);
 }
 
+// Send message to client
 void Server::sendMsg(const std::string& message) {
     send(clientSocket, message.c_str(), message.length(), 0);
 }
 
+// Handles authentication handshake before allowing operations
 bool Server::handleHandshake() {
     verified = false;
     txSeq = 0;
@@ -61,7 +67,7 @@ bool Server::handleHandshake() {
     std::cout << "Received: " << msg << std::endl;
     logger.log("RX", getMsgType(msg), ++rxSeq, msg.size());
 
-    // Reject operational commands received before verification is complete
+    // Reject operational commands before verification
     if (msg == "REQ_SNAPSHOT" || msg == "REQ_DOWNLOAD") {
         std::cout << "ERROR: Rejected unverified request: " << msg << "\n";
         std::string nack = "NACK|NOT_VERIFIED";
@@ -70,15 +76,19 @@ bool Server::handleHandshake() {
         return false;
     }
 
+    // Expect HELLO to begin handshake
     if (msg != "HELLO") return false;
 
+    // Send challenge value
     std::string challenge = "12345";
     sendMsg(challenge);
     logger.log("TX", "CHALLENGE", ++txSeq, challenge.size());
 
+    // Receive response
     std::string response = receive();
     logger.log("RX", getMsgType(response), ++rxSeq, response.size());
 
+    // Validate response
     std::string expected = "RESPONSE|" + challenge + "_secret";
 
     if (response != expected) {
@@ -88,6 +98,7 @@ bool Server::handleHandshake() {
         return false;
     }
 
+    // Send verification success
     std::string ok = "VERIFY_OK";
     sendMsg(ok);
     logger.log("TX", "VERIFY_OK", ++txSeq, ok.size());
@@ -97,13 +108,15 @@ bool Server::handleHandshake() {
     return true;
 }
 
+// Main server loop
 void Server::run() {
     while (true) {
-        std::cout << "Waiting for client...\n";   // DEBUG LINE
+        std::cout << "Waiting for client...\n";
 
         sockaddr_in client;
         int c = sizeof(client);
 
+        // Accept incoming connection
         clientSocket = accept(serverSocket, (sockaddr*)&client, &c);
 
         if (clientSocket == INVALID_SOCKET) {
@@ -113,12 +126,14 @@ void Server::run() {
 
         std::cout << "Client connected!\n";
 
+        // Perform handshake
         if (!handleHandshake()) {
             std::cout << "Handshake failed\n";
             closesocket(clientSocket);
             continue;
         }
 
+        // Handle client requests
         while (true) {
             std::string request = receive();
 
@@ -129,6 +144,7 @@ void Server::run() {
 
             logger.log("RX", getMsgType(request), ++rxSeq, request.size());
 
+            // Reject commands if somehow not verified
             if (request == "REQ_SNAPSHOT" || request == "REQ_DOWNLOAD") {
                 if (!verified) {
                     std::cout << "ERROR: Rejected unverified request: " << request << "\n";
@@ -139,11 +155,14 @@ void Server::run() {
                 }
             }
 
+            // Handle snapshot request
             if (request == "REQ_SNAPSHOT") {
+                // Send ACK
                 std::string ack = "ACK";
                 sendMsg(ack);
                 logger.log("TX", "ACK", ++txSeq, ack.size());
 
+                // Create telemetry packet
                 FuelPacket packet;
 
                 packet.header.packetID = 1;
@@ -158,9 +177,19 @@ void Server::run() {
                 packet.body.emergencyFlag = false;
                 packet.body.alertMessage = (char*)"Normal";
 
+                // Serialize packet into string format
                 std::string data = SerializePacket(packet);
+
+                // Send packet data
                 sendMsg(data);
                 logger.log("TX", "DATA", ++txSeq, data.size());
+
+                // ===== FILE TRANSFER COMPLETION SIGNAL =====
+                // Send total bytes so client can verify integrity
+                int totalBytes = data.size();
+                std::string doneMsg = "FILE_DONE|" + std::to_string(totalBytes);
+                sendMsg(doneMsg);
+                logger.log("TX", "FILE_DONE", ++txSeq, doneMsg.size());
 
                 std::cout << "Snapshot sent\n";
             }

@@ -20,8 +20,22 @@ private:
     int rxSeq = 0;
     bool verified = false;
 
+    // server state machine
+    enum class ServerState {
+        Waiting,
+        Connected,
+        Verified,
+        Transferring,
+        Closing
+    };
+
+    ServerState currentState = ServerState::Waiting; // initial state
+
     std::string receive();
     void sendMsg(const std::string& message);
 
     bool handleHandshake();
+
+    // new function to handle file download
+    void handleDownload();
 };

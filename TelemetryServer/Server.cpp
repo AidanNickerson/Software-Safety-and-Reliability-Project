@@ -3,8 +3,12 @@
 // Group 8
 #include "Server.h"
 #include "Packet.h"
+#include "Packetutils.h"   // for SerializePacket
+
 #include <iostream>
 #include <ctime>
+#include <fstream>   // for file handling
+#include <windows.h> // for Sleep to separate packets
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -93,13 +97,75 @@ bool Server::handleHandshake() {
     logger.log("TX", "VERIFY_OK", ++txSeq, ok.size());
 
     verified = true;
+
+    // update state after verification
+    currentState = ServerState::Verified;
+    std::cout << "State: Verified\n";
+
     std::cout << "Client verified\n";
     return true;
 }
 
+// ---------- DOWNLOAD HANDLER ----------
+void Server::handleDownload() {
+    std::ifstream file("telemetry.log", std::ios::binary);
+
+    // new: state update
+    currentState = ServerState::Transferring;
+    std::cout << "State: Transferring\n";
+
+    // check if file exists
+    if (!file) {
+        std::string err = "ERROR|File not found";
+        sendMsg(err);
+        logger.log("TX", "ERROR", ++txSeq, err.size());
+        return;
+    }
+
+    // get file size
+    file.seekg(0, std::ios::end);
+    int totalSize = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    int chunkSize = 1024;
+
+    // send FILE_INFO (metadata)
+    std::string info = "FILE_INFO|" + std::to_string(totalSize) + "|" + std::to_string(chunkSize);
+    sendMsg(info);
+    logger.log("TX", "FILE_INFO", ++txSeq, info.size());
+
+    Sleep(100);
+
+    char buffer[1024];
+
+    while (true) {
+        file.read(buffer, chunkSize);
+        int bytesRead = file.gcount();
+
+        if (bytesRead <= 0) break;
+
+        send(clientSocket, buffer, bytesRead, 0);
+        Sleep(10);
+    }
+
+    Sleep(50);
+
+    std::string endMsg = "FILE_END";
+    sendMsg(endMsg);
+    logger.log("TX", "FILE_END", ++txSeq, endMsg.size());
+
+    file.close();
+
+    // state update after transfer
+    currentState = ServerState::Closing;
+    std::cout << "State: Closing\n";
+
+    std::cout << "File sent successfully\n";
+}
+
 void Server::run() {
     while (true) {
-        std::cout << "Waiting for client...\n";   // DEBUG LINE
+        std::cout << "Waiting for client...\n";
 
         sockaddr_in client;
         int c = sizeof(client);
@@ -112,6 +178,10 @@ void Server::run() {
         }
 
         std::cout << "Client connected!\n";
+
+        // update state
+        currentState = ServerState::Connected;
+        std::cout << "State: Connected\n";
 
         if (!handleHandshake()) {
             std::cout << "Handshake failed\n";
@@ -164,8 +234,30 @@ void Server::run() {
 
                 std::cout << "Snapshot sent\n";
             }
+
+            // handle file download request
+            if (request == "REQ_DOWNLOAD") {
+
+                // new: enforce valid state
+                if (currentState != ServerState::Verified) {
+                    std::string nack = "NACK|INVALID_STATE";
+                    sendMsg(nack);
+                    logger.log("TX", "NACK", ++txSeq, nack.size());
+                    continue;
+                }
+
+                std::string ack = "ACK";
+                sendMsg(ack);
+                logger.log("TX", "ACK", ++txSeq, ack.size());
+
+                handleDownload();
+            }
         }
 
         closesocket(clientSocket);
+
+        // reset state
+        currentState = ServerState::Waiting;
+        std::cout << "State: Waiting\n";
     }
 }

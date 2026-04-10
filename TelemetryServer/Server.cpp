@@ -1,17 +1,19 @@
 // Amro Belbeisi, Aidan Nickerson, Mayank Kumar
 // CSCN74000 - Software Safety and Reliability
 // Group 8
-
 #include "Server.h"
 #include "Packet.h"
+#include "Packetutils.h"   // for SerializePacket
+
 #include <iostream>
 #include <fstream>
 #include <ctime>
 #include <cstring>
+#include <fstream>   // for file handling
+#include <windows.h> // for Sleep to separate packets
 
 #pragma comment(lib, "ws2_32.lib")
 
-// Initialize Winsock, create socket, bind, and start listening
 bool Server::start(int port) {
     WSADATA wsa;
 
@@ -372,6 +374,24 @@ void Server::run() {
                 logger.log("TX", "NACK", txSeq, nackPayload.size());
                 logger.log("ERROR", "INVALID_CMD", rxSeq, request.size());
                 std::cout << "Unknown command from client: " << cmdStr << "\n";
+            }
+
+            // handle file download request
+            if (request == "REQ_DOWNLOAD") {
+
+                // new: enforce valid state
+                if (currentState != ServerState::Verified) {
+                    std::string nack = "NACK|INVALID_STATE";
+                    sendMsg(nack);
+                    logger.log("TX", "NACK", ++txSeq, nack.size());
+                    continue;
+                }
+
+                std::string ack = "ACK";
+                sendMsg(ack);
+                logger.log("TX", "ACK", ++txSeq, ack.size());
+
+                handleDownload();
             }
         }
 

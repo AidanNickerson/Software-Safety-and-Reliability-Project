@@ -9,9 +9,16 @@
 
 // Packet types
 enum PacketType {
-    FUEL_STATUS,   // Regular fuel status report
-    LANDED_SAFE,   // Aircraft has landed safely
-    ACK_DIVERT     // Acknowledgement of emergency divert command
+    FUEL_STATUS = 0,   // Regular fuel status report
+    LANDED_SAFE = 1,   // Aircraft has landed safely
+    ACK_DIVERT = 2,    // Acknowledgement of emergency divert command
+
+    // new packet types for file download feature
+    REQ_DOWNLOAD = 10,   // client request
+    FILE_INFO = 11,      // server metadata
+    FILE_CHUNK = 12,     // (optional, not used now)
+    FILE_END = 13,       // transfer complete
+    ERROR_MSG = 14       // error case
 };
 
 // Header

@@ -106,67 +106,6 @@ std::string Client::receive(ProtocolHeader& outHdr) {
     return result;
 }
 
-// ---------- DOWNLOAD FILE ----------
-void Client::downloadFile() {
-    char buffer[1024];
-
-    int totalSize = 0;
-    int received = 0;
-
-    std::ofstream outFile("downloaded.log", std::ios::binary);
-
-    // receive FILE_INFO
-    std::string infoMsg = receive();
-
-    if (infoMsg.find("FILE_INFO") == 0) {
-        size_t first = infoMsg.find("|");
-        size_t second = infoMsg.find("|", first + 1);
-
-        totalSize = std::stoi(infoMsg.substr(first + 1, second - first - 1));
-
-        std::cout << "Downloading file of size: " << totalSize << "\n";
-    }
-    else {
-        std::cout << "Invalid FILE_INFO received\n";
-        return;
-    }
-
-    // IMPORTANT: small delay to ensure clean separation
-    Sleep(100);
-
-    // receive file data
-    while (received < totalSize) {
-        int bytes = recv(sock, buffer, sizeof(buffer), 0);
-
-        if (bytes <= 0) {
-            std::cout << "Connection lost during download\n";
-            break;
-        }
-
-        // check if FILE_END came inside buffer
-        std::string chunk(buffer, bytes);
-        if (chunk.find("FILE_END") != std::string::npos) {
-            break;
-        }
-
-        outFile.write(buffer, bytes);
-        received += bytes;
-
-        std::cout << "Received: " << received << "/" << totalSize << "\n";
-    }
-
-    std::cout << "Download finished\n";
-
-    outFile.close();
-
-    if (received >= totalSize) {
-        std::cout << "Download successful\n";
-    }
-    else {
-        std::cout << "Download incomplete\n";
-    }
-}
-
 // ---------- RUN ----------
 void Client::run() {
     txSeq = 0;

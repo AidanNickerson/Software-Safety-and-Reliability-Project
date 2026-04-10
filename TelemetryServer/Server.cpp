@@ -376,23 +376,6 @@ void Server::run() {
                 std::cout << "Unknown command from client: " << cmdStr << "\n";
             }
 
-            // handle file download request
-            if (request == "REQ_DOWNLOAD") {
-
-                // new: enforce valid state
-                if (currentState != ServerState::Verified) {
-                    std::string nack = "NACK|INVALID_STATE";
-                    sendMsg(nack);
-                    logger.log("TX", "NACK", ++txSeq, nack.size());
-                    continue;
-                }
-
-                std::string ack = "ACK";
-                sendMsg(ack);
-                logger.log("TX", "ACK", ++txSeq, ack.size());
-
-                handleDownload();
-            }
         }
 
         closesocket(clientSocket);

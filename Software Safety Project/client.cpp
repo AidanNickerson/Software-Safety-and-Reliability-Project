@@ -6,8 +6,9 @@
 
 #include "Client.h"
 #include <iostream>
+#include <fstream>
 #include <winsock2.h>
-#include <windows.h>   // for Sleep()
+#include <cstring>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -23,145 +24,272 @@ bool Client::connectToServer(const std::string& ip, int port) {
     server.sin_family = AF_INET;
     server.sin_port = htons(port);
 
-    // Attempt to connect
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         std::cout << "Connection failed\n";
         return false;
     }
 
     std::cout << "CONNECTED\n";
-
-    // Open log file
     logger.open("client_log.txt");
-
     return true;
 }
 
 // ---------- SEND ----------
-void Client::send(const std::string& message) {
-    ::send(sock, message.c_str(), message.length(), 0);
+// Prepends a binary ProtocolHeader before the payload so every message is
+// framed as: [magic|version|msgType|seq|payloadLen] + [payloadLen bytes].
+void Client::send(const std::string& payload, MessageType type) {
+    ProtocolHeader hdr;
+    hdr.magic      = htonl(PROTO_MAGIC);
+    hdr.version    = PROTO_VERSION;
+    hdr.msgType    = static_cast<uint8_t>(type);
+    hdr.seq        = htons(static_cast<uint16_t>(++txSeq));
+    hdr.payloadLen = htonl(static_cast<uint32_t>(payload.size()));
+
+    ::send(sock, reinterpret_cast<const char*>(&hdr), sizeof(hdr), 0);
+    if (!payload.empty()) {
+        ::send(sock, payload.c_str(), static_cast<int>(payload.size()), 0);
+    }
 }
 
 // ---------- RECEIVE ----------
-std::string Client::receive() {
-    char buffer[1024] = { 0 };
-    int bytes = recv(sock, buffer, sizeof(buffer), 0);
+// Reads the fixed ProtocolHeader first, then dynamically allocates a buffer
+// of exactly outHdr.payloadLen bytes and reads the payload into it.
+// outHdr.magic == 0 indicates a connection failure.
+std::string Client::receive(ProtocolHeader& outHdr) {
+    memset(&outHdr, 0, sizeof(outHdr));
 
-    // If connection closed or error
-    if (bytes <= 0) {
-        std::cout << "Server disconnected or error\n";
+    // Read fixed-size header
+    char hdrBuf[sizeof(ProtocolHeader)] = { 0 };
+    int total = 0;
+    while (total < static_cast<int>(sizeof(ProtocolHeader))) {
+        int r = recv(sock, hdrBuf + total,
+                     static_cast<int>(sizeof(ProtocolHeader)) - total, 0);
+        if (r <= 0) {
+            std::cout << "Server disconnected or error\n";
+            return "";
+        }
+        total += r;
+    }
+
+    memcpy(&outHdr, hdrBuf, sizeof(ProtocolHeader));
+    outHdr.magic      = ntohl(outHdr.magic);
+    outHdr.seq        = ntohs(outHdr.seq);
+    outHdr.payloadLen = ntohl(outHdr.payloadLen);
+    ++rxSeq;
+
+    if (outHdr.magic != PROTO_MAGIC) {
+        std::cout << "Invalid packet magic\n";
+        memset(&outHdr, 0, sizeof(outHdr));
         return "";
     }
 
-    return std::string(buffer, bytes);
+    if (outHdr.payloadLen == 0) return "";
+
+    // Dynamically allocate payload buffer based on payloadLen
+    char* buf = new char[outHdr.payloadLen + 1];
+    total = 0;
+    while (total < static_cast<int>(outHdr.payloadLen)) {
+        int r = recv(sock, buf + total,
+                     static_cast<int>(outHdr.payloadLen) - total, 0);
+        if (r <= 0) {
+            delete[] buf;
+            std::cout << "Server disconnected during payload\n";
+            memset(&outHdr, 0, sizeof(outHdr));
+            return "";
+        }
+        total += r;
+    }
+    buf[outHdr.payloadLen] = '\0';
+
+    std::string result(buf, outHdr.payloadLen);
+    delete[] buf;
+    return result;
 }
 
 // ---------- RUN ----------
 void Client::run() {
     txSeq = 0;
     rxSeq = 0;
-
-    int bytesReceived = 0;  // Track total bytes received for validation
+    state = CONNECTED;
 
     // ===== STEP 1: SEND HELLO =====
-    {
-        std::string hello = "HELLO";
-        send(hello);
-        logger.log("TX", "HELLO", ++txSeq, hello.size());
-    }
+    send("HELLO", MSG_HELLO);
+    logger.log("TX", "HELLO", txSeq, 5);
 
-    // Receive challenge from server
-    std::string challenge = receive();
-
-    if (challenge.empty()) {
+    // Receive challenge
+    ProtocolHeader hdr;
+    std::string challenge = receive(hdr);
+    if (hdr.magic == 0) {
         std::cout << "No challenge received\n";
         return;
     }
-    logger.log("RX", getMsgType(challenge), ++rxSeq, challenge.size());
+    logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
 
     // ===== STEP 2: SEND RESPONSE =====
-    std::string response = challenge + "_secret";
-    std::string responseMsg = "RESPONSE|" + response;
-    send(responseMsg);
-    logger.log("TX", "RESPONSE", ++txSeq, responseMsg.size());
+    std::string responseMsg = "RESPONSE|" + challenge + "_secret";
+    send(responseMsg, MSG_RESPONSE);
+    logger.log("TX", "RESPONSE", txSeq, responseMsg.size());
 
     // ===== STEP 3: VERIFY =====
-    std::string verify = receive();
-    logger.log("RX", getMsgType(verify), ++rxSeq, verify.size());
+    receive(hdr);
+    logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
 
-    if (verify != "VERIFY_OK") {
+    if (hdr.msgType != MSG_VERIFY_OK) {
         std::cout << "Verification failed\n";
         return;
     }
 
     std::cout << "Verification successful\n";
 
-    // ===== STEP 4: CONTINUOUS SNAPSHOT REQUEST =====
-    while (true) {
-        // Send snapshot request
-        std::string req = "REQ_SNAPSHOT";
-        send(req);
-        logger.log("TX", "REQ_SNAPSHOT", ++txSeq, req.size());
+    // ===== STEP 4: COMMAND MENU =====
+    while (state != DISCONNECTED) {
+        std::cout << "\n--- Command Menu ---\n";
+        std::cout << "[1] Request Snapshot\n";
+        std::cout << "[2] Request Download\n";
+        std::cout << "[3] Close Session\n";
+        std::cout << "Enter command: ";
 
-        // Receive ACK or NACK
-        std::string ack = receive();
-        if (ack.empty()) {
-            break;
-        }
-        logger.log("RX", getMsgType(ack), ++rxSeq, ack.size());
+        std::string input;
+        std::getline(std::cin, input);
 
-        if (ack.find("NACK") != std::string::npos) {
-            std::cout << "Server rejected request\n";
-            break;
-        }
+        if (input == "1" || input == "REQ_SNAPSHOT") {
+            // ---- Request Snapshot ----
+            // Server generates new telemetry, appends to telemetry.log, and
+            // returns the most recent entry.
+            send("", MSG_REQ_SNAPSHOT);
+            logger.log("TX", "REQ_SNAPSHOT", txSeq, 0);
 
-        // Receive telemetry data
-        std::string data = receive();
-        if (data.empty()) {
-            break;
-        }
-        logger.log("RX", "DATA", ++rxSeq, data.size());
+            std::string ackPayload = receive(hdr);
+            if (hdr.magic == 0) break;
+            logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
 
-        // Add to total bytes received
-        bytesReceived += data.size();
+            if (hdr.msgType == MSG_NACK) {
+                std::cout << "[ERROR] Server rejected request: " << ackPayload << "\n";
+                logger.log("ERROR", "NACK_RECEIVED", rxSeq, hdr.payloadLen);
+                continue;
+            }
 
-        std::cout << "Snapshot: " << data << std::endl;
+            int bytesReceived = 0;
+            std::string data = receive(hdr);
+            if (hdr.magic == 0) break;
+            logger.log("RX", "DATA", rxSeq, hdr.payloadLen);
+            bytesReceived += static_cast<int>(data.size());
+            std::cout << "Snapshot: " << data << "\n";
 
-        // ===== RECEIVE FILE_DONE MESSAGE =====
-        std::string doneMsg = receive();
-        if (doneMsg.empty()) {
-            break;
-        }
+            std::string donePayload = receive(hdr);
+            if (hdr.magic == 0) break;
+            logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
 
-        logger.log("RX", getMsgType(doneMsg), ++rxSeq, doneMsg.size());
-
-        // Validate total bytes against server value
-        if (doneMsg.find("FILE_DONE") != std::string::npos) {
-            size_t pos = doneMsg.find("|");
-
-            if (pos != std::string::npos) {
-                int expectedBytes = std::stoi(doneMsg.substr(pos + 1));
-
-                // Compare expected vs actual bytes
+            if (hdr.msgType == MSG_FILE_DONE) {
+                int expectedBytes = std::stoi(donePayload);
                 if (bytesReceived == expectedBytes) {
-                    std::cout << "File transfer complete: SUCCESS\n";
+                    std::cout << "Snapshot received: SUCCESS\n";
                     logger.log("INFO", "TRANSFER_OK", 0, bytesReceived);
-                }
-                else {
-                    std::cout << "ERROR: Byte mismatch!\n";
-                    std::cout << "Expected: " << expectedBytes
-                        << " Received: " << bytesReceived << std::endl;
-
+                } else {
+                    std::cout << "ERROR: Byte mismatch! Expected: " << expectedBytes
+                              << " Received: " << bytesReceived << "\n";
                     logger.log("ERROR", "BYTE_MISMATCH", 0, bytesReceived);
                 }
             }
 
-            break; // End transfer after FILE_DONE
-        }
+        } else if (input == "2" || input == "REQ_DOWNLOAD") {
+            // ---- Request Download ----
+            // Server streams telemetry.log (>= 1 MB) as FILE_CHUNK packets.
+            // Client writes each chunk directly to downloaded.log and verifies
+            // the total byte count on FILE_DONE.
+            send("", MSG_REQ_DOWNLOAD);
+            logger.log("TX", "REQ_DOWNLOAD", txSeq, 0);
 
-        // Wait before next request
-        Sleep(2000);
+            // Receive ACK or NACK
+            std::string ackPayload = receive(hdr);
+            if (hdr.magic == 0) break;
+            logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
+
+            if (hdr.msgType == MSG_NACK) {
+                std::cout << "[ERROR] Server rejected download: " << ackPayload << "\n";
+                logger.log("ERROR", "NACK_RECEIVED", rxSeq, hdr.payloadLen);
+                continue;
+            }
+
+            // Open output file in binary mode before first chunk arrives
+            std::ofstream outFile("downloaded.log", std::ios::binary);
+            if (!outFile.is_open()) {
+                std::cout << "ERROR: Could not open downloaded.log for writing\n";
+                continue;
+            }
+
+            int bytesReceived = 0;
+            bool transferOk = true;
+
+            // Receive FILE_CHUNK packets until FILE_DONE
+            while (true) {
+                std::string payload = receive(hdr);
+                if (hdr.magic == 0) {
+                    // Connection lost mid-transfer
+                    outFile.close();
+                    transferOk = false;
+                    break;
+                }
+                logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
+
+                if (hdr.msgType == MSG_FILE_CHUNK) {
+                    outFile.write(payload.c_str(), static_cast<std::streamsize>(payload.size()));
+                    bytesReceived += static_cast<int>(payload.size());
+
+                } else if (hdr.msgType == MSG_FILE_DONE) {
+                    outFile.close();
+                    int expectedBytes = std::stoi(payload);
+                    if (bytesReceived == expectedBytes) {
+                        std::cout << "Download complete: SUCCESS ("
+                                  << bytesReceived << " bytes saved to downloaded.log)\n";
+                        logger.log("INFO", "TRANSFER_OK", 0, bytesReceived);
+                    } else {
+                        std::cout << "ERROR: Byte mismatch! Expected: " << expectedBytes
+                                  << " Received: " << bytesReceived << "\n";
+                        logger.log("ERROR", "BYTE_MISMATCH", 0, bytesReceived);
+                    }
+                    break;
+
+                } else {
+                    std::cout << "[ERROR] Unexpected packet during download: "
+                              << msgTypeToStr(hdr.msgType) << "\n";
+                    outFile.close();
+                    transferOk = false;
+                    break;
+                }
+            }
+
+            if (!transferOk) break;
+
+        } else if (input == "3" || input == "REQ_CLOSE") {
+            // ---- Graceful Session Close ----
+            send("", MSG_REQ_CLOSE);
+            logger.log("TX", "REQ_CLOSE", txSeq, 0);
+
+            receive(hdr);
+            if (hdr.magic == PROTO_MAGIC) {
+                logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
+            }
+
+            logger.log("INFO", "SESSION_END", 0, 0);
+            std::cout << "Session closed gracefully\n";
+            state = DISCONNECTED;
+
+        } else {
+            // ---- Unknown command: send to server to trigger NACK ----
+            send(input, MSG_UNKNOWN);
+            logger.log("TX", "UNKNOWN", txSeq, input.size());
+
+            std::string nackPayload = receive(hdr);
+            if (hdr.magic == 0) break;
+            logger.log("RX", msgTypeToStr(hdr.msgType), rxSeq, hdr.payloadLen);
+
+            if (hdr.msgType == MSG_NACK) {
+                std::cout << "[ERROR] Invalid command. Server response: " << nackPayload << "\n";
+                logger.log("ERROR", "NACK_RECEIVED", rxSeq, hdr.payloadLen);
+            }
+        }
     }
 
-    std::cout << "Client stopped\n";
+    std::cout << "Client stopped. State: DISCONNECTED\n";
 }

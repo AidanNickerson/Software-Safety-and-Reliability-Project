@@ -1,17 +1,16 @@
 // Amro Belbeisi, Aidan Nickerson, Mayank Kumar
 // CSCN74000 - Software Safety and Reliability
 // Group 8
-
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 
 #include "Client.h"
 #include <iostream>
 #include <winsock2.h>
 #include <windows.h>   // for Sleep()
+#include <fstream>     // for file writing
 
 #pragma comment(lib, "ws2_32.lib")
 
-// Establish connection to server
 bool Client::connectToServer(const std::string& ip, int port) {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -23,7 +22,6 @@ bool Client::connectToServer(const std::string& ip, int port) {
     server.sin_family = AF_INET;
     server.sin_port = htons(port);
 
-    // Attempt to connect
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
         std::cout << "Connection failed\n";
         return false;
@@ -31,7 +29,6 @@ bool Client::connectToServer(const std::string& ip, int port) {
 
     std::cout << "CONNECTED\n";
 
-    // Open log file
     logger.open("client_log.txt");
 
     return true;
@@ -47,7 +44,6 @@ std::string Client::receive() {
     char buffer[1024] = { 0 };
     int bytes = recv(sock, buffer, sizeof(buffer), 0);
 
-    // If connection closed or error
     if (bytes <= 0) {
         std::cout << "Server disconnected or error\n";
         return "";
@@ -56,21 +52,78 @@ std::string Client::receive() {
     return std::string(buffer, bytes);
 }
 
+// ---------- DOWNLOAD FILE ----------
+void Client::downloadFile() {
+    char buffer[1024];
+
+    int totalSize = 0;
+    int received = 0;
+
+    std::ofstream outFile("downloaded.log", std::ios::binary);
+
+    // receive FILE_INFO
+    std::string infoMsg = receive();
+
+    if (infoMsg.find("FILE_INFO") == 0) {
+        size_t first = infoMsg.find("|");
+        size_t second = infoMsg.find("|", first + 1);
+
+        totalSize = std::stoi(infoMsg.substr(first + 1, second - first - 1));
+
+        std::cout << "Downloading file of size: " << totalSize << "\n";
+    }
+    else {
+        std::cout << "Invalid FILE_INFO received\n";
+        return;
+    }
+
+    // IMPORTANT: small delay to ensure clean separation
+    Sleep(100);
+
+    // receive file data
+    while (received < totalSize) {
+        int bytes = recv(sock, buffer, sizeof(buffer), 0);
+
+        if (bytes <= 0) {
+            std::cout << "Connection lost during download\n";
+            break;
+        }
+
+        // check if FILE_END came inside buffer
+        std::string chunk(buffer, bytes);
+        if (chunk.find("FILE_END") != std::string::npos) {
+            break;
+        }
+
+        outFile.write(buffer, bytes);
+        received += bytes;
+
+        std::cout << "Received: " << received << "/" << totalSize << "\n";
+    }
+
+    std::cout << "Download finished\n";
+
+    outFile.close();
+
+    if (received >= totalSize) {
+        std::cout << "Download successful\n";
+    }
+    else {
+        std::cout << "Download incomplete\n";
+    }
+}
+
 // ---------- RUN ----------
 void Client::run() {
     txSeq = 0;
     rxSeq = 0;
 
-    int bytesReceived = 0;  // Track total bytes received for validation
-
-    // ===== STEP 1: SEND HELLO =====
+    // Step 1: HELLO
     {
         std::string hello = "HELLO";
         send(hello);
         logger.log("TX", "HELLO", ++txSeq, hello.size());
     }
-
-    // Receive challenge from server
     std::string challenge = receive();
 
     if (challenge.empty()) {
@@ -79,13 +132,13 @@ void Client::run() {
     }
     logger.log("RX", getMsgType(challenge), ++rxSeq, challenge.size());
 
-    // ===== STEP 2: SEND RESPONSE =====
+    // Step 2: RESPONSE
     std::string response = challenge + "_secret";
     std::string responseMsg = "RESPONSE|" + response;
     send(responseMsg);
     logger.log("TX", "RESPONSE", ++txSeq, responseMsg.size());
 
-    // ===== STEP 3: VERIFY =====
+    // Step 3: VERIFY
     std::string verify = receive();
     logger.log("RX", getMsgType(verify), ++rxSeq, verify.size());
 
@@ -96,14 +149,24 @@ void Client::run() {
 
     std::cout << "Verification successful\n";
 
-    // ===== STEP 4: CONTINUOUS SNAPSHOT REQUEST =====
+    // new: request file download once after verification
+    std::string downloadReq = "REQ_DOWNLOAD";
+    send(downloadReq);
+    logger.log("TX", "REQ_DOWNLOAD", ++txSeq, downloadReq.size());
+
+    std::string ackDownload = receive();
+    logger.log("RX", getMsgType(ackDownload), ++rxSeq, ackDownload.size());
+
+    if (ackDownload.find("ACK") != std::string::npos) {
+        downloadFile();  // start receiving file
+    }
+
+    // Step 4: CONTINUOUS SNAPSHOT REQUEST
     while (true) {
-        // Send snapshot request
         std::string req = "REQ_SNAPSHOT";
         send(req);
         logger.log("TX", "REQ_SNAPSHOT", ++txSeq, req.size());
 
-        // Receive ACK or NACK
         std::string ack = receive();
         if (ack.empty()) {
             break;
@@ -115,51 +178,15 @@ void Client::run() {
             break;
         }
 
-        // Receive telemetry data
         std::string data = receive();
         if (data.empty()) {
             break;
         }
         logger.log("RX", "DATA", ++rxSeq, data.size());
 
-        // Add to total bytes received
-        bytesReceived += data.size();
-
         std::cout << "Snapshot: " << data << std::endl;
 
-        // ===== RECEIVE FILE_DONE MESSAGE =====
-        std::string doneMsg = receive();
-        if (doneMsg.empty()) {
-            break;
-        }
-
-        logger.log("RX", getMsgType(doneMsg), ++rxSeq, doneMsg.size());
-
-        // Validate total bytes against server value
-        if (doneMsg.find("FILE_DONE") != std::string::npos) {
-            size_t pos = doneMsg.find("|");
-
-            if (pos != std::string::npos) {
-                int expectedBytes = std::stoi(doneMsg.substr(pos + 1));
-
-                // Compare expected vs actual bytes
-                if (bytesReceived == expectedBytes) {
-                    std::cout << "File transfer complete: SUCCESS\n";
-                    logger.log("INFO", "TRANSFER_OK", 0, bytesReceived);
-                }
-                else {
-                    std::cout << "ERROR: Byte mismatch!\n";
-                    std::cout << "Expected: " << expectedBytes
-                        << " Received: " << bytesReceived << std::endl;
-
-                    logger.log("ERROR", "BYTE_MISMATCH", 0, bytesReceived);
-                }
-            }
-
-            break; // End transfer after FILE_DONE
-        }
-
-        // Wait before next request
+        // wait 2 seconds before next request
         Sleep(2000);
     }
 

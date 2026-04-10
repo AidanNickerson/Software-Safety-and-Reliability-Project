@@ -18,4 +18,7 @@ private:
 
     std::string receive();
     void send(const std::string& message);
+
+    // new function to handle file download
+    void downloadFile();
 };

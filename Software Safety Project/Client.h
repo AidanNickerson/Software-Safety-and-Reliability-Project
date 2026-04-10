@@ -3,7 +3,11 @@
 // Group 8
 #pragma once
 #include <string>
+#include <winsock2.h>
 #include "Logger.h"
+#include "Packet.h"
+
+enum ClientState { CONNECTED, DISCONNECTED };
 
 class Client {
 public:
@@ -11,14 +15,16 @@ public:
     void run();
 
 private:
-    int sock;
+    SOCKET sock;
     Logger logger;
     int txSeq = 0;
     int rxSeq = 0;
+    ClientState state = DISCONNECTED;
 
-    std::string receive();
-    void send(const std::string& message);
+    // Reads fixed ProtocolHeader then exactly hdr.payloadLen bytes.
+    // outHdr.magic == 0 on connection failure.
+    std::string receive(ProtocolHeader& outHdr);
 
-    // new function to handle file download
-    void downloadFile();
+    // Prepends binary ProtocolHeader before sending payload.
+    void send(const std::string& payload, MessageType type);
 };
